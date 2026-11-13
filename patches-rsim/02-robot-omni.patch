@@ -1,0 +1,363 @@
+diff --git a/src/robosim/robosim_py.cpp b/src/robosim/robosim_py.cpp
+index 01bec93..63de5ae 100644
+--- a/src/robosim/robosim_py.cpp
++++ b/src/robosim/robosim_py.cpp
+@@ -11,12 +11,15 @@ using vvd = std::vector<std::vector<double>>;
+ 
+ struct VSS {
+     VSS(int fieldType, int nRobotsBlue, int nRobotsYellow, int timeStep_ms,
+-        const vd &ballPos, const vvd &blueRobotsPos, const vvd &yellowRobotsPos) : m_fieldType(fieldType),
+-                                                                                   m_nRobotsBlue(nRobotsBlue),
+-                                                                                   m_nRobotsYellow(nRobotsYellow),
+-                                                                                   m_timeStep_ms(timeStep_ms) {
++        const vd &ballPos, const vvd &blueRobotsPos, const vvd &yellowRobotsPos,
++        bool omniBlue, bool omniYellow) : m_fieldType(fieldType),
++                                          m_nRobotsBlue(nRobotsBlue),
++                                          m_nRobotsYellow(nRobotsYellow),
++                                          m_timeStep_ms(timeStep_ms),
++                                          m_omniBlue(omniBlue),
++                                          m_omniYellow(omniYellow) {
+         m_world = new VSSWorld(m_fieldType, m_nRobotsBlue, m_nRobotsYellow, m_timeStep_ms / 1000.0,
+-                               ballPos, blueRobotsPos, yellowRobotsPos);
++                               ballPos, blueRobotsPos, yellowRobotsPos, m_omniBlue, m_omniYellow);
+     }
+ 
+     ~VSS() { delete m_world; }
+@@ -28,13 +31,14 @@ struct VSS {
+     void reset(const vd &ballPos, const vvd &blueRobotsPos, const vvd &yellowRobotsPos) {
+         delete m_world;
+         m_world = new VSSWorld(m_fieldType, m_nRobotsBlue, m_nRobotsYellow, m_timeStep_ms / 1000.0,
+-                               ballPos, blueRobotsPos, yellowRobotsPos);
++                               ballPos, blueRobotsPos, yellowRobotsPos, m_omniBlue, m_omniYellow);
+     }
+ 
+     std::unordered_map<std::string, double> getFieldParams() const { return m_world->getFieldParams(); }
+ 
+     VSSWorld *m_world;
+     int m_fieldType, m_nRobotsBlue, m_nRobotsYellow, m_timeStep_ms;
++    bool m_omniBlue, m_omniYellow;
+ };
+ 
+ struct SSL {
+@@ -68,7 +72,11 @@ struct SSL {
+ 
+ PYBIND11_MODULE(_robosim, m) {
+     py::class_<VSS>(m, "VSS")
+-            .def(py::init<int, int, int, int, vd, vvd, vvd>())
++            .def(py::init<int, int, int, int, vd, vvd, vvd, bool, bool>(),
++                 py::arg("field_type"), py::arg("n_robots_blue"), py::arg("n_robots_yellow"),
++                 py::arg("time_step_ms"), py::arg("ball_pos"), py::arg("blue_robots_pos"),
++                 py::arg("yellow_robots_pos"),
++                 py::arg("omni_blue") = false, py::arg("omni_yellow") = false)
+             .def("step", &VSS::step)
+             .def("get_state", &VSS::getState)
+             .def("reset", &VSS::reset)
+diff --git a/src/robosim/vssconfig.h b/src/robosim/vssconfig.h
+index 536c6db..9191ca9 100644
+--- a/src/robosim/vssconfig.h
++++ b/src/robosim/vssconfig.h
+@@ -145,6 +145,14 @@ namespace VSSConfig
+         double casterWheelsRadius = 0.002;
+         double casterWheelsMass = 0.001;
+ 
++        // --- Robot omnidireccional de 3 ruedas ---
++        // Angulo (grados) donde va montada cada rueda, medido desde el frente del robot (+x local)
++        int OmniWheel0Angle = 60;
++        int OmniWheel1Angle = 180;
++        int OmniWheel2Angle = 300;
++        // Friccion lateral: los rodillos de una rueda omni casi no oponen resistencia de lado
++        double OmniWheelPerpendicularFriction = 0.05;
++
+     public:
+         double getRadius() { return this->Radius; }
+         double getHeight() { return this->Height; }
+@@ -161,6 +169,10 @@ namespace VSSConfig
+         double getWheelMotorMaxRPM() { return this->WheelMotorMaxRPM; }
+         double getCasterWheelsRadius() { return this->casterWheelsRadius; }
+         double getCasterWheelsMass() { return this->casterWheelsMass; }
++        int getOmniWheel0Angle() { return this->OmniWheel0Angle; }
++        int getOmniWheel1Angle() { return this->OmniWheel1Angle; }
++        int getOmniWheel2Angle() { return this->OmniWheel2Angle; }
++        double getOmniWheelPerpendicularFriction() { return this->OmniWheelPerpendicularFriction; }
+ 
+     };
+ 
+diff --git a/src/robosim/vssrobot.cpp b/src/robosim/vssrobot.cpp
+index 0caa000..31cdf4b 100644
+--- a/src/robosim/vssrobot.cpp
++++ b/src/robosim/vssrobot.cpp
+@@ -103,8 +103,10 @@ VSSRobot::RBall::~RBall() {
+ 
+ 
+ VSSRobot::VSSRobot(PWorld *world, PBall *ball, dReal x, dReal y, dReal z,
+-               int rob_id, int dir, bool turn_on)
++               int rob_id, int dir, bool turn_on, bool omni)
+ {
++    this->omni = omni;
++    this->nWheels = omni ? 3 : 2;
+     m_x = x;
+     m_y = y;
+     m_z = z;
+@@ -118,12 +120,22 @@ VSSRobot::VSSRobot(PWorld *world, PBall *ball, dReal x, dReal y, dReal z,
+     chassis = new PBox(x, y, z, VSSConfig::Robot().getRadius() * 2, VSSConfig::Robot().getRadius() * 2, VSSConfig::Robot().getHeight(), VSSConfig::Robot().getBodyMass() * 0.99f);
+     physics->addChassisObject(chassis);
+ 
+-    this->wheels[0] = new Wheel(this, 0, VSSConfig::Robot().getWheel0Angle(), VSSConfig::Robot().getWheel0Angle());
+-    this->wheels[1] = new Wheel(this, 1, VSSConfig::Robot().getWheel1Angle(), VSSConfig::Robot().getWheel1Angle());
+-    this->balls[0] = new RBall(this, 0, 45, 45);
+-    this->balls[1] = new RBall(this, 1, -45, -45);
+-    this->balls[2] = new RBall(this, 2, 135, 135);
+-    this->balls[3] = new RBall(this, 3, -135, -135);
++    if (omni)
++    {
++        // 3 ruedas omni; con 3 puntos de apoyo el robot ya es estable, no necesita bolitas de apoyo
++        this->wheels[0] = new Wheel(this, 0, VSSConfig::Robot().getOmniWheel0Angle(), VSSConfig::Robot().getOmniWheel0Angle());
++        this->wheels[1] = new Wheel(this, 1, VSSConfig::Robot().getOmniWheel1Angle(), VSSConfig::Robot().getOmniWheel1Angle());
++        this->wheels[2] = new Wheel(this, 2, VSSConfig::Robot().getOmniWheel2Angle(), VSSConfig::Robot().getOmniWheel2Angle());
++    }
++    else
++    {
++        this->wheels[0] = new Wheel(this, 0, VSSConfig::Robot().getWheel0Angle(), VSSConfig::Robot().getWheel0Angle());
++        this->wheels[1] = new Wheel(this, 1, VSSConfig::Robot().getWheel1Angle(), VSSConfig::Robot().getWheel1Angle());
++        this->balls[0] = new RBall(this, 0, 45, 45);
++        this->balls[1] = new RBall(this, 1, -45, -45);
++        this->balls[2] = new RBall(this, 2, 135, 135);
++        this->balls[3] = new RBall(this, 3, -135, -135);
++    }
+     setDir(m_dir);
+     on = turn_on;
+ }
+@@ -163,16 +175,17 @@ void VSSRobot::step()
+     if (!on)
+     {
+         if (last_state)
+-            wheels[0]->desiredAngularSpeed = wheels[1]->desiredAngularSpeed = 0;
++            resetSpeeds();
+     }
+-    for (auto &wheel : wheels)
+-        wheel->step();
++    for (int i = 0; i < nWheels; i++)
++        wheels[i]->step();
+     last_state = on;
+ }
+ 
+ void VSSRobot::resetSpeeds()
+ {
+-    wheels[0]->desiredAngularSpeed = wheels[1]->desiredAngularSpeed = 0;
++    for (int i = 0; i < nWheels; i++)
++        wheels[i]->desiredAngularSpeed = 0;
+ }
+ 
+ void VSSRobot::resetRobot()
+@@ -180,10 +193,10 @@ void VSSRobot::resetRobot()
+     resetSpeeds();
+     dBodySetLinearVel(chassis->body, 0, 0, 0);
+     dBodySetAngularVel(chassis->body, 0, 0, 0);
+-    for (auto &wheel : wheels)
++    for (int i = 0; i < nWheels; i++)
+     {
+-        dBodySetLinearVel(wheel->cyl->body, 0, 0, 0);
+-        dBodySetAngularVel(wheel->cyl->body, 0, 0, 0);
++        dBodySetLinearVel(wheels[i]->cyl->body, 0, 0, 0);
++        dBodySetAngularVel(wheels[i]->cyl->body, 0, 0, 0);
+     }
+     dReal x, y;
+     getXY(x, y);
+@@ -215,10 +228,10 @@ void VSSRobot::setXY(dReal x, dReal y)
+     dReal height = VSS_ROBOT_START_Z();
+     chassis->getBodyPosition(xx, yy, zz);
+     chassis->setBodyPosition(x, y, height);
+-    for (auto &wheel : wheels)
++    for (int i = 0; i < nWheels; i++)
+     {
+-        wheel->cyl->getBodyPosition(kx, ky, kz);
+-        wheel->cyl->setBodyPosition(kx - xx + x, ky - yy + y, kz - zz + height);
++        wheels[i]->cyl->getBodyPosition(kx, ky, kz);
++        wheels[i]->cyl->setBodyPosition(kx - xx + x, ky - yy + y, kz - zz + height);
+     }
+ }
+ 
+@@ -234,8 +247,9 @@ void VSSRobot::setDir(dReal ang)
+     finalPos[0] += cPos[0];
+     finalPos[1] += cPos[1];
+     finalPos[2] += cPos[2];
+-    for (auto &wheel : wheels)
++    for (int i = 0; i < nWheels; i++)
+     {
++        Wheel *wheel = wheels[i];
+         wheel->cyl->getBodyRotation(wLocalRot, true);
+         dMultiply0(wRot, cRot, wLocalRot, 3, 3, 3);
+         dBodySetRotation(wheel->cyl->body, wRot);
+@@ -250,19 +264,19 @@ void VSSRobot::setDir(dReal ang)
+ 
+ void VSSRobot::setWheelDesiredAngularSpeed(int i, dReal s)
+ {
+-    if (!((i >= 2) || (i < 0)))
++    if (!((i >= nWheels) || (i < 0)))
+         wheels[i]->desiredAngularSpeed = s;
+ }
+ 
+ dReal VSSRobot::getSpeed(int i)
+ {
+-    if ((i >= 2) || (i < 0))
++    if ((i >= nWheels) || (i < 0))
+         return -1;
+     return wheels[i]->desiredAngularSpeed;
+ }
+ 
+ void VSSRobot::incSpeed(int i, dReal v)
+ {
+-    if (!((i >= 2) || (i < 0)))
++    if (!((i >= nWheels) || (i < 0)))
+         wheels[i]->desiredAngularSpeed += v;
+ }
+diff --git a/src/robosim/vssrobot.h b/src/robosim/vssrobot.h
+index 76ce88b..260f67e 100644
+--- a/src/robosim/vssrobot.h
++++ b/src/robosim/vssrobot.h
+@@ -42,6 +42,8 @@ public:
+     PObject *chassis;
+     PBox *boxes[3]{};
+     bool on;
++    bool omni;      // true = 3 ruedas omnidireccionales, false = diferencial (2 ruedas)
++    int nWheels;    // 3 si es omni, 2 si es diferencial
+     //these values are not controled by this class
+     bool selected{};
+     dReal select_x{}, select_y{}, select_z{};
+@@ -57,7 +59,7 @@ public:
+         PCylinder *cyl;
+         dReal desiredAngularSpeed, maxAngularSpeed; // rad/s
+         VSSRobot *rob;
+-    } * wheels[2]{};
++    } * wheels[3]{};
+ 
+     class RBall
+     {
+@@ -72,7 +74,7 @@ public:
+     } * balls[4]{};
+ 
+     VSSRobot(PWorld *world, PBall *ball, dReal x, dReal y, dReal z,
+-           int rob_id, int dir, bool turn_on);
++           int rob_id, int dir, bool turn_on, bool omni = false);
+     ~VSSRobot();
+     void step();
+     void setWheelDesiredAngularSpeed(int i, dReal s); //i = 0,1,2,3
+diff --git a/src/robosim/vssworld.cpp b/src/robosim/vssworld.cpp
+index 5f98b89..853425b 100644
+--- a/src/robosim/vssworld.cpp
++++ b/src/robosim/vssworld.cpp
+@@ -25,7 +25,9 @@ Copyright (C) 2011, Parsian Robotic Center (eew.aut.ac.ir/~parsian/grsim)
+ #include <math.h>
+ 
+ 
+-bool vssWheelCallBack(dGeomID o1, dGeomID o2, PSurface *surface, int /*robots_count*/)
++// Configura el contacto rueda-suelo. 'perpendicularFriction' es la friccion a lo largo
++// del eje de la rueda (de lado): alta en una rueda normal, casi nula en una omni.
++static bool wheelContact(dGeomID o1, dGeomID o2, PSurface *surface, double perpendicularFriction)
+ {
+     //s->id2 is ground
+     const dReal *r; //wheels rotation matrix
+@@ -48,7 +50,7 @@ bool vssWheelCallBack(dGeomID o1, dGeomID o2, PSurface *surface, int /*robots_co
+     }
+ 
+     surface->surface.mode = dContactFDir1 | dContactMu2 | dContactApprox1 | dContactSoftCFM;
+-    surface->surface.mu = fric(VSSConfig::Robot().getWheelPerpendicularFriction());
++    surface->surface.mu = fric(perpendicularFriction);
+     surface->surface.mu2 = fric(VSSConfig::Robot().getWheelTangentFriction());
+     surface->surface.soft_cfm = 0.002;
+ 
+@@ -63,8 +65,19 @@ bool vssWheelCallBack(dGeomID o1, dGeomID o2, PSurface *surface, int /*robots_co
+     return true;
+ }
+ 
++bool vssWheelCallBack(dGeomID o1, dGeomID o2, PSurface *surface, int /*robots_count*/)
++{
++    return wheelContact(o1, o2, surface, VSSConfig::Robot().getWheelPerpendicularFriction());
++}
++
++bool vssOmniWheelCallBack(dGeomID o1, dGeomID o2, PSurface *surface, int /*robots_count*/)
++{
++    return wheelContact(o1, o2, surface, VSSConfig::Robot().getOmniWheelPerpendicularFriction());
++}
++
+ VSSWorld::VSSWorld(int fieldType, int nRobotsBlue, int nRobotsYellow, double timeStep,
+-             std::vector<double> ballPos, std::vector<std::vector<double>> blueRobotsPos, std::vector<std::vector<double>> yellowRobotsPos)
++             std::vector<double> ballPos, std::vector<std::vector<double>> blueRobotsPos, std::vector<std::vector<double>> yellowRobotsPos,
++             bool omniBlue, bool omniYellow)
+ {
+     this->field.setFieldType(fieldType);
+     this->field.setRobotsCount(nRobotsBlue + nRobotsYellow);
+@@ -94,7 +107,7 @@ VSSWorld::VSSWorld(int fieldType, int nRobotsBlue, int nRobotsYellow, double tim
+         double dir = robotPos[2];
+         this->robots[k] = new VSSRobot(
+             this->physics, this->ball, x, y, VSS_ROBOT_START_Z(),
+-            k + 1, dir, turn_on);
++            k + 1, dir, turn_on, omniBlue);
+     }
+     for (int k = 0; k < this->field.getRobotsYellowCount(); k++)
+     {
+@@ -105,7 +118,7 @@ VSSWorld::VSSWorld(int fieldType, int nRobotsBlue, int nRobotsYellow, double tim
+         double dir = robotPos[2];
+         this->robots[k + this->field.getRobotsBlueCount()] = new VSSRobot(
+             this->physics, this->ball, x, y, VSS_ROBOT_START_Z(),
+-            k + 1, dir, turn_on);
++            k + 1, dir, turn_on, omniYellow);
+     }
+     this->physics->initAllObjects();
+ 
+@@ -132,16 +145,18 @@ VSSWorld::VSSWorld(int fieldType, int nRobotsBlue, int nRobotsYellow, double tim
+             this->physics->createSurface(robots[k]->chassis, wall);
+         }
+         this->physics->createSurface(robots[k]->chassis, this->ball);
+-        for (auto &wheel : robots[k]->wheels)
++        for (int w = 0; w < robots[k]->nWheels; w++)
+         {
++            auto *wheel = robots[k]->wheels[w];
+             this->physics->createSurface(wheel->cyl, this->ball);
+             PSurface *w_g = this->physics->createSurface(wheel->cyl, this->ground);
+             w_g->surface = wheelswithground.surface;
+             w_g->usefdir1 = true;
+-            w_g->callback = vssWheelCallBack;
++            w_g->callback = robots[k]->omni ? vssOmniWheelCallBack : vssWheelCallBack;
+         }
+         for (auto &b : robots[k]->balls)
+         {
++            if (b == nullptr) continue; // los robots omni no tienen bolitas de apoyo
+             //            this->physics->createSurface(b->pBall,this->ball);
+             PSurface *w_g = this->physics->createSurface(b->pBall, this->ground);
+             w_g->surface = wheelswithground.surface;
+@@ -294,8 +309,18 @@ void VSSWorld::setActions(std::vector<std::vector<double>> actions)
+     for (int i = 0; i < this->field.getRobotsCount(); i++)
+     {
+         std::vector<double> rbtAction = actions[i];
+-        robots[i]->setWheelDesiredAngularSpeed(0, -1 * rbtAction[0]);
+-        robots[i]->setWheelDesiredAngularSpeed(1, rbtAction[1]);
++        if (robots[i]->omni)
++        {
++            // Omni: [w0, w1, w2] en rad/s, una velocidad por rueda
++            for (int w = 0; w < 3; w++)
++                robots[i]->setWheelDesiredAngularSpeed(w, rbtAction[w]);
++        }
++        else
++        {
++            // Diferencial: [izquierda, derecha] en rad/s
++            robots[i]->setWheelDesiredAngularSpeed(0, -1 * rbtAction[0]);
++            robots[i]->setWheelDesiredAngularSpeed(1, rbtAction[1]);
++        }
+     }
+ }
+ 
+diff --git a/src/robosim/vssworld.h b/src/robosim/vssworld.h
+index a611aed..56507c1 100644
+--- a/src/robosim/vssworld.h
++++ b/src/robosim/vssworld.h
+@@ -49,7 +49,8 @@ public:
+     VSSRobot *robots[VSS_MAX_ROBOT_COUNT * 2]{};
+ 
+     VSSWorld(int fieldType, int nRobotsBlue, int nRobotsYellow, double timeStep,
+-             std::vector<double> ballPos, std::vector<std::vector<double>> blueRobotsPos, std::vector<std::vector<double>> yellowRobotsPos);
++             std::vector<double> ballPos, std::vector<std::vector<double>> blueRobotsPos, std::vector<std::vector<double>> yellowRobotsPos,
++             bool omniBlue = false, bool omniYellow = false);
+     ~VSSWorld();
+     void step(std::vector<std::vector<double>> actions);
+     void replace(std::vector<double> ballPos, std::vector<std::vector<double>> blueRobotsPos, std::vector<std::vector<double>> yellowRobotsPos);
