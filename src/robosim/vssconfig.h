@@ -145,6 +145,14 @@ namespace VSSConfig
         double casterWheelsRadius = 0.002;
         double casterWheelsMass = 0.001;
 
+        // --- Robot omnidireccional de 3 ruedas ---
+        // Angulo (grados) donde va montada cada rueda, medido desde el frente del robot (+x local)
+        int OmniWheel0Angle = 60;
+        int OmniWheel1Angle = 180;
+        int OmniWheel2Angle = 300;
+        // Friccion lateral: los rodillos de una rueda omni casi no oponen resistencia de lado
+        double OmniWheelPerpendicularFriction = 0.05;
+
     public:
         double getRadius() { return this->Radius; }
         double getHeight() { return this->Height; }
@@ -161,6 +169,10 @@ namespace VSSConfig
         double getWheelMotorMaxRPM() { return this->WheelMotorMaxRPM; }
         double getCasterWheelsRadius() { return this->casterWheelsRadius; }
         double getCasterWheelsMass() { return this->casterWheelsMass; }
+        int getOmniWheel0Angle() { return this->OmniWheel0Angle; }
+        int getOmniWheel1Angle() { return this->OmniWheel1Angle; }
+        int getOmniWheel2Angle() { return this->OmniWheel2Angle; }
+        double getOmniWheelPerpendicularFriction() { return this->OmniWheelPerpendicularFriction; }
 
     };
 

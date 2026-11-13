@@ -49,7 +49,8 @@ public:
     VSSRobot *robots[VSS_MAX_ROBOT_COUNT * 2]{};
 
     VSSWorld(int fieldType, int nRobotsBlue, int nRobotsYellow, double timeStep,
-             std::vector<double> ballPos, std::vector<std::vector<double>> blueRobotsPos, std::vector<std::vector<double>> yellowRobotsPos);
+             std::vector<double> ballPos, std::vector<std::vector<double>> blueRobotsPos, std::vector<std::vector<double>> yellowRobotsPos,
+             bool omniBlue = false, bool omniYellow = false);
     ~VSSWorld();
     void step(std::vector<std::vector<double>> actions);
     void replace(std::vector<double> ballPos, std::vector<std::vector<double>> blueRobotsPos, std::vector<std::vector<double>> yellowRobotsPos);

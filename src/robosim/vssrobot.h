@@ -42,6 +42,8 @@ public:
     PObject *chassis;
     PBox *boxes[3]{};
     bool on;
+    bool omni;      // true = 3 ruedas omnidireccionales, false = diferencial (2 ruedas)
+    int nWheels;    // 3 si es omni, 2 si es diferencial
     //these values are not controled by this class
     bool selected{};
     dReal select_x{}, select_y{}, select_z{};
@@ -57,7 +59,7 @@ public:
         PCylinder *cyl;
         dReal desiredAngularSpeed, maxAngularSpeed; // rad/s
         VSSRobot *rob;
-    } * wheels[2]{};
+    } * wheels[3]{};
 
     class RBall
     {
@@ -72,7 +74,7 @@ public:
     } * balls[4]{};
 
     VSSRobot(PWorld *world, PBall *ball, dReal x, dReal y, dReal z,
-           int rob_id, int dir, bool turn_on);
+           int rob_id, int dir, bool turn_on, bool omni = false);
     ~VSSRobot();
     void step();
     void setWheelDesiredAngularSpeed(int i, dReal s); //i = 0,1,2,3

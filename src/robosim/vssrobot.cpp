@@ -103,8 +103,10 @@ VSSRobot::RBall::~RBall() {
 
 
 VSSRobot::VSSRobot(PWorld *world, PBall *ball, dReal x, dReal y, dReal z,
-               int rob_id, int dir, bool turn_on)
+               int rob_id, int dir, bool turn_on, bool omni)
 {
+    this->omni = omni;
+    this->nWheels = omni ? 3 : 2;
     m_x = x;
     m_y = y;
     m_z = z;
@@ -118,12 +120,22 @@ VSSRobot::VSSRobot(PWorld *world, PBall *ball, dReal x, dReal y, dReal z,
     chassis = new PBox(x, y, z, VSSConfig::Robot().getRadius() * 2, VSSConfig::Robot().getRadius() * 2, VSSConfig::Robot().getHeight(), VSSConfig::Robot().getBodyMass() * 0.99f);
     physics->addChassisObject(chassis);
 
-    this->wheels[0] = new Wheel(this, 0, VSSConfig::Robot().getWheel0Angle(), VSSConfig::Robot().getWheel0Angle());
-    this->wheels[1] = new Wheel(this, 1, VSSConfig::Robot().getWheel1Angle(), VSSConfig::Robot().getWheel1Angle());
-    this->balls[0] = new RBall(this, 0, 45, 45);
-    this->balls[1] = new RBall(this, 1, -45, -45);
-    this->balls[2] = new RBall(this, 2, 135, 135);
-    this->balls[3] = new RBall(this, 3, -135, -135);
+    if (omni)
+    {
+        // 3 ruedas omni; con 3 puntos de apoyo el robot ya es estable, no necesita bolitas de apoyo
+        this->wheels[0] = new Wheel(this, 0, VSSConfig::Robot().getOmniWheel0Angle(), VSSConfig::Robot().getOmniWheel0Angle());
+        this->wheels[1] = new Wheel(this, 1, VSSConfig::Robot().getOmniWheel1Angle(), VSSConfig::Robot().getOmniWheel1Angle());
+        this->wheels[2] = new Wheel(this, 2, VSSConfig::Robot().getOmniWheel2Angle(), VSSConfig::Robot().getOmniWheel2Angle());
+    }
+    else
+    {
+        this->wheels[0] = new Wheel(this, 0, VSSConfig::Robot().getWheel0Angle(), VSSConfig::Robot().getWheel0Angle());
+        this->wheels[1] = new Wheel(this, 1, VSSConfig::Robot().getWheel1Angle(), VSSConfig::Robot().getWheel1Angle());
+        this->balls[0] = new RBall(this, 0, 45, 45);
+        this->balls[1] = new RBall(this, 1, -45, -45);
+        this->balls[2] = new RBall(this, 2, 135, 135);
+        this->balls[3] = new RBall(this, 3, -135, -135);
+    }
     setDir(m_dir);
     on = turn_on;
 }
@@ -163,16 +175,17 @@ void VSSRobot::step()
     if (!on)
     {
         if (last_state)
-            wheels[0]->desiredAngularSpeed = wheels[1]->desiredAngularSpeed = 0;
+            resetSpeeds();
     }
-    for (auto &wheel : wheels)
-        wheel->step();
+    for (int i = 0; i < nWheels; i++)
+        wheels[i]->step();
     last_state = on;
 }
 
 void VSSRobot::resetSpeeds()
 {
-    wheels[0]->desiredAngularSpeed = wheels[1]->desiredAngularSpeed = 0;
+    for (int i = 0; i < nWheels; i++)
+        wheels[i]->desiredAngularSpeed = 0;
 }
 
 void VSSRobot::resetRobot()
@@ -180,10 +193,10 @@ void VSSRobot::resetRobot()
     resetSpeeds();
     dBodySetLinearVel(chassis->body, 0, 0, 0);
     dBodySetAngularVel(chassis->body, 0, 0, 0);
-    for (auto &wheel : wheels)
+    for (int i = 0; i < nWheels; i++)
     {
-        dBodySetLinearVel(wheel->cyl->body, 0, 0, 0);
-        dBodySetAngularVel(wheel->cyl->body, 0, 0, 0);
+        dBodySetLinearVel(wheels[i]->cyl->body, 0, 0, 0);
+        dBodySetAngularVel(wheels[i]->cyl->body, 0, 0, 0);
     }
     dReal x, y;
     getXY(x, y);
@@ -215,10 +228,10 @@ void VSSRobot::setXY(dReal x, dReal y)
     dReal height = VSS_ROBOT_START_Z();
     chassis->getBodyPosition(xx, yy, zz);
     chassis->setBodyPosition(x, y, height);
-    for (auto &wheel : wheels)
+    for (int i = 0; i < nWheels; i++)
     {
-        wheel->cyl->getBodyPosition(kx, ky, kz);
-        wheel->cyl->setBodyPosition(kx - xx + x, ky - yy + y, kz - zz + height);
+        wheels[i]->cyl->getBodyPosition(kx, ky, kz);
+        wheels[i]->cyl->setBodyPosition(kx - xx + x, ky - yy + y, kz - zz + height);
     }
 }
 
@@ -234,8 +247,9 @@ void VSSRobot::setDir(dReal ang)
     finalPos[0] += cPos[0];
     finalPos[1] += cPos[1];
     finalPos[2] += cPos[2];
-    for (auto &wheel : wheels)
+    for (int i = 0; i < nWheels; i++)
     {
+        Wheel *wheel = wheels[i];
         wheel->cyl->getBodyRotation(wLocalRot, true);
         dMultiply0(wRot, cRot, wLocalRot, 3, 3, 3);
         dBodySetRotation(wheel->cyl->body, wRot);
@@ -250,19 +264,19 @@ void VSSRobot::setDir(dReal ang)
 
 void VSSRobot::setWheelDesiredAngularSpeed(int i, dReal s)
 {
-    if (!((i >= 2) || (i < 0)))
+    if (!((i >= nWheels) || (i < 0)))
         wheels[i]->desiredAngularSpeed = s;
 }
 
 dReal VSSRobot::getSpeed(int i)
 {
-    if ((i >= 2) || (i < 0))
+    if ((i >= nWheels) || (i < 0))
         return -1;
     return wheels[i]->desiredAngularSpeed;
 }
 
 void VSSRobot::incSpeed(int i, dReal v)
 {
-    if (!((i >= 2) || (i < 0)))
+    if (!((i >= nWheels) || (i < 0)))
         wheels[i]->desiredAngularSpeed += v;
 }

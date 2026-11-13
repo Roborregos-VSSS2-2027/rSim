@@ -25,7 +25,9 @@ Copyright (C) 2011, Parsian Robotic Center (eew.aut.ac.ir/~parsian/grsim)
 #include <math.h>
 
 
-bool vssWheelCallBack(dGeomID o1, dGeomID o2, PSurface *surface, int /*robots_count*/)
+// Configura el contacto rueda-suelo. 'perpendicularFriction' es la friccion a lo largo
+// del eje de la rueda (de lado): alta en una rueda normal, casi nula en una omni.
+static bool wheelContact(dGeomID o1, dGeomID o2, PSurface *surface, double perpendicularFriction)
 {
     //s->id2 is ground
     const dReal *r; //wheels rotation matrix
@@ -48,7 +50,7 @@ bool vssWheelCallBack(dGeomID o1, dGeomID o2, PSurface *surface, int /*robots_co
     }
 
     surface->surface.mode = dContactFDir1 | dContactMu2 | dContactApprox1 | dContactSoftCFM;
-    surface->surface.mu = fric(VSSConfig::Robot().getWheelPerpendicularFriction());
+    surface->surface.mu = fric(perpendicularFriction);
     surface->surface.mu2 = fric(VSSConfig::Robot().getWheelTangentFriction());
     surface->surface.soft_cfm = 0.002;
 
@@ -63,8 +65,19 @@ bool vssWheelCallBack(dGeomID o1, dGeomID o2, PSurface *surface, int /*robots_co
     return true;
 }
 
+bool vssWheelCallBack(dGeomID o1, dGeomID o2, PSurface *surface, int /*robots_count*/)
+{
+    return wheelContact(o1, o2, surface, VSSConfig::Robot().getWheelPerpendicularFriction());
+}
+
+bool vssOmniWheelCallBack(dGeomID o1, dGeomID o2, PSurface *surface, int /*robots_count*/)
+{
+    return wheelContact(o1, o2, surface, VSSConfig::Robot().getOmniWheelPerpendicularFriction());
+}
+
 VSSWorld::VSSWorld(int fieldType, int nRobotsBlue, int nRobotsYellow, double timeStep,
-             std::vector<double> ballPos, std::vector<std::vector<double>> blueRobotsPos, std::vector<std::vector<double>> yellowRobotsPos)
+             std::vector<double> ballPos, std::vector<std::vector<double>> blueRobotsPos, std::vector<std::vector<double>> yellowRobotsPos,
+             bool omniBlue, bool omniYellow)
 {
     this->field.setFieldType(fieldType);
     this->field.setRobotsCount(nRobotsBlue + nRobotsYellow);
@@ -94,7 +107,7 @@ VSSWorld::VSSWorld(int fieldType, int nRobotsBlue, int nRobotsYellow, double tim
         double dir = robotPos[2];
         this->robots[k] = new VSSRobot(
             this->physics, this->ball, x, y, VSS_ROBOT_START_Z(),
-            k + 1, dir, turn_on);
+            k + 1, dir, turn_on, omniBlue);
     }
     for (int k = 0; k < this->field.getRobotsYellowCount(); k++)
     {
@@ -105,7 +118,7 @@ VSSWorld::VSSWorld(int fieldType, int nRobotsBlue, int nRobotsYellow, double tim
         double dir = robotPos[2];
         this->robots[k + this->field.getRobotsBlueCount()] = new VSSRobot(
             this->physics, this->ball, x, y, VSS_ROBOT_START_Z(),
-            k + 1, dir, turn_on);
+            k + 1, dir, turn_on, omniYellow);
     }
     this->physics->initAllObjects();
 
@@ -132,16 +145,18 @@ VSSWorld::VSSWorld(int fieldType, int nRobotsBlue, int nRobotsYellow, double tim
             this->physics->createSurface(robots[k]->chassis, wall);
         }
         this->physics->createSurface(robots[k]->chassis, this->ball);
-        for (auto &wheel : robots[k]->wheels)
+        for (int w = 0; w < robots[k]->nWheels; w++)
         {
+            auto *wheel = robots[k]->wheels[w];
             this->physics->createSurface(wheel->cyl, this->ball);
             PSurface *w_g = this->physics->createSurface(wheel->cyl, this->ground);
             w_g->surface = wheelswithground.surface;
             w_g->usefdir1 = true;
-            w_g->callback = vssWheelCallBack;
+            w_g->callback = robots[k]->omni ? vssOmniWheelCallBack : vssWheelCallBack;
         }
         for (auto &b : robots[k]->balls)
         {
+            if (b == nullptr) continue; // los robots omni no tienen bolitas de apoyo
             //            this->physics->createSurface(b->pBall,this->ball);
             PSurface *w_g = this->physics->createSurface(b->pBall, this->ground);
             w_g->surface = wheelswithground.surface;
@@ -294,8 +309,18 @@ void VSSWorld::setActions(std::vector<std::vector<double>> actions)
     for (int i = 0; i < this->field.getRobotsCount(); i++)
     {
         std::vector<double> rbtAction = actions[i];
-        robots[i]->setWheelDesiredAngularSpeed(0, -1 * rbtAction[0]);
-        robots[i]->setWheelDesiredAngularSpeed(1, rbtAction[1]);
+        if (robots[i]->omni)
+        {
+            // Omni: [w0, w1, w2] en rad/s, una velocidad por rueda
+            for (int w = 0; w < 3; w++)
+                robots[i]->setWheelDesiredAngularSpeed(w, rbtAction[w]);
+        }
+        else
+        {
+            // Diferencial: [izquierda, derecha] en rad/s
+            robots[i]->setWheelDesiredAngularSpeed(0, -1 * rbtAction[0]);
+            robots[i]->setWheelDesiredAngularSpeed(1, rbtAction[1]);
+        }
     }
 }
 
